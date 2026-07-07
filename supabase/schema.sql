@@ -300,6 +300,46 @@ begin
   where id = target_profile_id;
 end $$;
 
+create or replace function note_task_event(task uuid, note text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  task_row tasks%rowtype;
+  clean_note text;
+  actor_name text;
+begin
+  if (select auth.uid()) is null then
+    raise exception 'Authentication is required';
+  end if;
+
+  clean_note := nullif(trim(note), '');
+  if clean_note is null then
+    raise exception 'Note is required';
+  end if;
+
+  select * into task_row
+  from tasks
+  where id = $1
+    and workspace_id = (select my_workspace_id());
+
+  if not found then
+    raise exception 'Task not found';
+  end if;
+
+  select coalesce(nullif(name, ''), id::text)
+    into actor_name
+    from profiles
+    where id = (select auth.uid());
+
+  insert into audit_events (workspace_id, task_id, actor, event, payload)
+  values (
+    task_row.workspace_id,
+    task_row.id,
+    coalesce(actor_name, 'System'),
+    'Task note',
+    jsonb_build_object('note', clean_note)
+  );
+end $$;
+
 create or replace function reroute_task(task_id uuid, new_flags jsonb, new_track text, reason text)
 returns void language plpgsql security definer set search_path = public as $$
 declare
@@ -631,22 +671,57 @@ begin
 
   if tg_op = 'INSERT' then
     event_text := 'Task created in ' || new.stage;
-    event_payload := jsonb_build_object('stage', new.stage, 'track', new.track);
+    event_payload := jsonb_build_object(
+      'title', new.title,
+      'stage', new.stage,
+      'track', new.track,
+      'owner_id', new.owner_id,
+      'reviewer_id', new.reviewer_id
+    );
   elsif old.stage is distinct from new.stage then
     event_text := 'Stage changed: ' || old.stage || ' -> ' || new.stage;
-    event_payload := jsonb_build_object('from_stage', old.stage, 'to_stage', new.stage, 'track', new.track);
+    event_payload := jsonb_build_object(
+      'from_stage', old.stage,
+      'to_stage', new.stage,
+      'track', new.track,
+      'from_owner_id', old.owner_id,
+      'to_owner_id', new.owner_id,
+      'from_reviewer_id', old.reviewer_id,
+      'to_reviewer_id', new.reviewer_id,
+      'signed_off', new.signoff is not null
+    );
   elsif old.track is distinct from new.track then
     event_text := 'Task rerouted';
-    event_payload := jsonb_build_object('from_track', old.track, 'to_track', new.track);
+    event_payload := jsonb_build_object(
+      'from_track', old.track,
+      'to_track', new.track,
+      'owner_id', new.owner_id,
+      'reviewer_id', new.reviewer_id
+    );
   elsif old.owner_id is distinct from new.owner_id then
     event_text := 'Owner updated';
-    event_payload := jsonb_build_object('from_owner_id', old.owner_id, 'to_owner_id', new.owner_id);
+    event_payload := jsonb_build_object(
+      'from_owner_id', old.owner_id,
+      'to_owner_id', new.owner_id,
+      'stage', new.stage,
+      'track', new.track
+    );
   elsif old.reviewer_id is distinct from new.reviewer_id or old.signoff is distinct from new.signoff then
     event_text := 'Reviewer sign-off updated';
-    event_payload := jsonb_build_object('reviewer_id', new.reviewer_id, 'signed_off', new.signoff is not null);
+    event_payload := jsonb_build_object(
+      'from_reviewer_id', old.reviewer_id,
+      'to_reviewer_id', new.reviewer_id,
+      'signed_off', new.signoff is not null,
+      'signoff', new.signoff
+    );
   elsif old.checklist is distinct from new.checklist then
     event_text := 'Checklist updated';
-    event_payload := jsonb_build_object('track', new.track, 'stage', new.stage);
+    event_payload := jsonb_build_object(
+      'track', new.track,
+      'stage', new.stage,
+      'owner_id', new.owner_id,
+      'reviewer_id', new.reviewer_id
+    );
   else
     event_text := 'Task updated';
     event_payload := '{}'::jsonb;

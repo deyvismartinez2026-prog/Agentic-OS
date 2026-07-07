@@ -209,12 +209,20 @@ function Board({ profile }) {
     const requestTitle = title.trim();
     if (!requestTitle) return setErr("Enter a request title.");
     const rec = recommendTrack({ flags }, config);
-    const { error } = await supabase.from("tasks")
+    const { data, error } = await supabase.from("tasks")
       .insert({ workspace_id: profile.workspace_id, title: requestTitle, flags, track: rec.track, stage: "intake" })
       .select("id").single();
     if (error) return setErr(error.message);
+    const reasonText = rec.reasons.length
+      ? ` Reasons: ${rec.reasons.map((reason) => reason.label).join(", ")}.`
+      : "";
+    const { error: noteError } = await supabase.rpc("note_task_event", {
+      task: data.id,
+      note: `Routing recommended ${rec.track === "full" ? t.fullReview : t.quickCheck} (${rec.confidence}%).${reasonText}`
+    });
     setTitle(""); setFlags({});
-    refresh();
+    await refresh();
+    if (noteError) setErr(`Task submitted, but audit note failed: ${noteError.message}`);
   }
 
   async function createInvite(e) {
