@@ -1,0 +1,47 @@
+/* Minimal pilot styles on the AAS design tokens.
+   The full fable.css design system ports over with the UI. */
+:root {
+  --paper: #F9F7F1; --sheet: #fff; --ink: #0E1116; --body: #565B63; --faint: #8E9097;
+  --rule: #E4E1D5; --blue: #1E5BFF; --blue-deep: #0F45E0; --risk: #C0392B;
+  --serif: "Fraunces", Georgia, serif; --sans: "Inter", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 560px; margin: 8vh auto; padding: 0 20px; }
+.wrap.wide { max-width: 1200px; margin: 4vh auto; }
+.serif { font-family: var(--serif); font-weight: 520; letter-spacing: -.02em; font-size: 34px; }
+.serif em { font-style: normal; color: var(--blue); }
+.lede { color: var(--body); font-size: 16px; }
+.muted { color: var(--faint); font-size: 13px; }
+.error { color: var(--risk); font-size: 13px; font-weight: 600; }
+.steps li { margin: 10px 0; color: var(--body); }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 5px; padding: 1px 6px; }
+input { font: inherit; padding: 9px 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--sheet); width: 100%; }
+input:focus { outline: 0; border-color: var(--blue); }
+.btn, button { font: inherit; font-weight: 650; cursor: pointer; border: 1px solid var(--rule); background: var(--sheet); border-radius: 8px; padding: 8px 14px; }
+.btn { background: var(--blue); color: #fff; border-color: transparent; white-space: nowrap; }
+.btn:hover { background: var(--blue-deep); }
+button:disabled { opacity: .45; cursor: default; }
+.link { border: 0; background: none; color: var(--blue); margin-top: 24px; }
+.row { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
+.col { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.card { background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; padding: 16px; margin: 18px 0; }
+.chip { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; border: 1px solid var(--blue); color: var(--blue-deep); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.flags { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--body); }
+.flags input { width: auto; accent-color: var(--blue); }
+.board { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.col-stage { background: #f1eee4; border: 1px solid var(--rule); border-radius: 10px; padding: 10px; min-height: 140px; }
+.col-stage h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--body); display: flex; justify-content: space-between; margin: 0 0 8px; }
+.tcard { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 9px; margin-bottom: 8px; font-size: 13px; }
+.tcard small { display: block; color: var(--faint); font-family: var(--mono); font-size: 10px; margin: 3px 0 6px; }
+.acts { display: flex; flex-wrap: wrap; gap: 5px; }
+.acts button { font-size: 11px; padding: 4px 8px; border-radius: 6px; }
+.checklist { display: flex; flex-direction: column; gap: 6px; width: 100%; color: var(--body); }
+.checklist label { display: flex; align-items: flex-start; gap: 6px; line-height: 1.35; }
+.checklist input { width: auto; margin-top: 2px; accent-color: var(--blue); }
+@media (max-width: 1000px) { .board { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) {
+  .row { flex-direction: column; align-items: stretch; }
+  .board { grid-template-columns: 1fr; }
+}
