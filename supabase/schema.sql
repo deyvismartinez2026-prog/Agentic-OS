@@ -35,21 +35,22 @@ create table if not exists invites (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces (id) on delete cascade,
   email text not null,
-  role text not null
+  role text not null default 'owner'
     check (role in ('admin', 'owner', 'reviewer', 'requester')),
   token uuid not null default gen_random_uuid() unique,
   created_by uuid references profiles (id),
-  accepted_by uuid references profiles (id),
   accepted_at timestamptz,
-  expires_at timestamptz not null default now() + interval '14 days',
   created_at timestamptz not null default now()
 );
+alter table invites add column if not exists role text not null default 'owner';
+alter table invites alter column role set default 'owner';
 create unique index if not exists invites_pending_email
   on invites (workspace_id, lower(email))
   where accepted_at is null;
 create index if not exists invites_token_active
   on invites (token)
   where accepted_at is null;
+create index if not exists invites_ws_time on invites (workspace_id, created_at desc);
 
 -- ---------- tasks ----------
 create table if not exists tasks (
@@ -195,17 +196,19 @@ begin
   return invite_token;
 end $$;
 
-create or replace function accept_invite(invite_token uuid, user_name text)
+drop function if exists accept_invite(uuid, text);
+create or replace function accept_invite(invite_token uuid)
 returns uuid language plpgsql security definer set search_path = public as $$
 declare
   invite_row invites%rowtype;
   jwt_email text;
+  profile_name text;
 begin
   if (select auth.uid()) is null then
     raise exception 'Authentication is required';
   end if;
-  if nullif(trim(user_name), '') is null then
-    raise exception 'User name is required';
+  if exists (select 1 from profiles where id = (select auth.uid())) then
+    raise exception 'Already onboarded';
   end if;
 
   select * into invite_row
@@ -219,24 +222,23 @@ begin
   if invite_row.accepted_at is not null then
     raise exception 'Invite has already been accepted';
   end if;
-  if invite_row.expires_at < now() then
-    raise exception 'Invite has expired';
-  end if;
 
   jwt_email := lower(coalesce(auth.jwt()->>'email', ''));
   if jwt_email = '' or jwt_email <> lower(invite_row.email) then
     raise exception 'Invite email does not match the signed-in user';
   end if;
-  if exists (select 1 from profiles where id = (select auth.uid())) then
-    raise exception 'Already onboarded';
-  end if;
+
+  profile_name := coalesce(
+    nullif(auth.jwt() #>> '{user_metadata,name}', ''),
+    nullif(split_part(jwt_email, '@', 1), ''),
+    jwt_email
+  );
 
   insert into profiles (id, workspace_id, name, role)
-  values ((select auth.uid()), invite_row.workspace_id, trim(user_name), invite_row.role);
+  values ((select auth.uid()), invite_row.workspace_id, profile_name, invite_row.role);
 
   update invites
-  set accepted_by = (select auth.uid()),
-      accepted_at = now()
+  set accepted_at = now()
   where id = invite_row.id;
 
   return invite_row.workspace_id;
@@ -246,6 +248,8 @@ create or replace function admin_set_role(target_profile_id uuid, new_role text)
 returns void language plpgsql security definer set search_path = public as $$
 declare
   clean_role text;
+  target_workspace uuid;
+  target_old_role text;
 begin
   if (select auth.uid()) is null then
     raise exception 'Authentication is required';
@@ -258,15 +262,24 @@ begin
   if clean_role not in ('admin', 'owner', 'reviewer', 'requester') then
     raise exception 'Invalid role';
   end if;
-  if target_profile_id = (select auth.uid()) and clean_role <> 'admin' then
-    raise exception 'Admins cannot remove their own admin role';
-  end if;
-  if not exists (
-    select 1 from profiles
+
+  select workspace_id, role
+    into target_workspace, target_old_role
+    from profiles
     where id = target_profile_id
-      and workspace_id = (select my_workspace_id())
-  ) then
+      and workspace_id = (select my_workspace_id());
+
+  if target_workspace is null then
     raise exception 'Profile is not in your workspace';
+  end if;
+
+  if target_old_role = 'admin' and clean_role <> 'admin' and (
+    select count(*)
+    from profiles
+    where workspace_id = target_workspace
+      and role = 'admin'
+  ) <= 1 then
+    raise exception 'Cannot demote the last workspace admin';
   end if;
 
   perform set_config('app.allow_profile_privilege_change', 'on', true);
@@ -330,6 +343,8 @@ drop policy if exists "profiles update self" on profiles;
 drop policy if exists "profiles insert self" on profiles;
 drop policy if exists "profiles update self basic fields" on profiles;
 drop policy if exists "invites read admin" on invites;
+drop policy if exists "invites insert admin" on invites;
+drop policy if exists "invites delete admin" on invites;
 drop policy if exists "workspaces read member" on workspaces;
 drop policy if exists "workspaces insert any authed" on workspaces;
 drop policy if exists "workspaces update member admin" on workspaces;
@@ -352,8 +367,16 @@ create policy "profiles update self basic fields" on profiles for update
     and role = (select my_role())
   );
 
--- invites: admins can inspect pending/accepted invites; writes go through RPCs
+-- invites: admins can inspect, create, and delete invites for their workspace.
 create policy "invites read admin" on invites for select
+  using (workspace_id = (select my_workspace_id()) and (select my_role()) = 'admin');
+create policy "invites insert admin" on invites for insert
+  with check (
+    workspace_id = (select my_workspace_id())
+    and (select my_role()) = 'admin'
+    and (created_by is null or created_by = (select auth.uid()))
+  );
+create policy "invites delete admin" on invites for delete
   using (workspace_id = (select my_workspace_id()) and (select my_role()) = 'admin');
 
 -- workspaces: members can read; admins can update config. Creation goes through RPC.
@@ -363,7 +386,7 @@ create policy "workspaces update member admin" on workspaces for update
   using (id = (select my_workspace_id()) and (select my_role()) = 'admin')
   with check (id = (select my_workspace_id()) and (select my_role()) = 'admin');
 
--- tasks / agent_runs / audit: full access within your own workspace
+-- tasks / agent_runs / audit: workspace-scoped reads and role-gated writes
 create policy "tasks select by workspace" on tasks for select
   using (workspace_id = (select my_workspace_id()));
 create policy "tasks insert by workspace member" on tasks for insert

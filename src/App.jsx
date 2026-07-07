@@ -23,9 +23,17 @@ function mergeConfig(base, override) {
 }
 
 function checklistComplete(task, config, listName) {
-  const items = config.checklists?.[listName] || [];
+  const items = reviewChecklistItems(config, listName);
   return items.every((item) => task.checklist?.[item.id]);
 }
+
+function reviewChecklistItems(config, listName) {
+  return (config.checklists?.[listName] || []).filter((item) => !item.requiresReviewer);
+}
+
+const ROLE_OPTIONS = ["admin", "owner", "reviewer", "requester"];
+const canManageTasks = (role) => role === "admin" || role === "owner";
+const canReviewTasks = (role) => role === "admin" || role === "owner" || role === "reviewer";
 
 function SetupScreen() {
   return (
@@ -80,11 +88,12 @@ function SignIn() {
   );
 }
 
-function Onboarding({ user, onDone }) {
+function Onboarding({ initialInviteToken = "", onDone }) {
   const [company, setCompany] = useState("");
   const [name, setName] = useState("");
+  const [inviteToken, setInviteToken] = useState(initialInviteToken);
   const [err, setErr] = useState("");
-  async function create(e) {
+  async function createWorkspace(e) {
     e.preventDefault();
     setErr("");
     const companyName = company.trim();
@@ -98,13 +107,31 @@ function Onboarding({ user, onDone }) {
     if (error) return setErr(error.message);
     onDone();
   }
+
+  async function joinWorkspace(e) {
+    e.preventDefault();
+    setErr("");
+    const token = inviteToken.trim();
+    if (!token) return setErr("Enter an invite token.");
+    const { error } = await supabase.rpc("accept_invite", { invite_token: token });
+    if (error) return setErr(error.message);
+    window.history.replaceState(null, "", window.location.pathname);
+    onDone();
+  }
+
   return (
     <div className="wrap">
-      <h1 className="serif">Create your workspace</h1>
-      <form onSubmit={create} className="col">
+      <h1 className="serif">Join Agentic OS</h1>
+      <form onSubmit={createWorkspace} className="card col">
+        <h2>Create a workspace</h2>
         <input required placeholder="Company / client name" value={company} onChange={(e) => setCompany(e.target.value)} />
         <input required placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
         <button className="btn">Create workspace →</button>
+      </form>
+      <form onSubmit={joinWorkspace} className="card col">
+        <h2>Join with an invite code</h2>
+        <input placeholder="Invite token" value={inviteToken} onChange={(e) => setInviteToken(e.target.value)} />
+        <button className="btn">Join workspace →</button>
       </form>
       {err && <p className="error">{err}</p>}
     </div>
@@ -114,23 +141,38 @@ function Onboarding({ user, onDone }) {
 function Board({ profile }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [tasks, setTasks] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [invites, setInvites] = useState([]);
   const [title, setTitle] = useState("");
   const [flags, setFlags] = useState({});
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("reviewer");
+  const [inviteLink, setInviteLink] = useState("");
   const [err, setErr] = useState("");
+  const isAdmin = profile.role === "admin";
+  const canManage = canManageTasks(profile.role);
+  const canReviewRole = canReviewTasks(profile.role);
 
   const refresh = useCallback(async () => {
-    const [{ data: ws, error: wsError }, { data: rows, error: tasksError }] = await Promise.all([
+    const [{ data: ws, error: wsError }, { data: rows, error: tasksError }, { data: memberRows, error: membersError }, inviteResult] = await Promise.all([
       supabase.from("workspaces").select("config").eq("id", profile.workspace_id).single(),
-      supabase.from("tasks").select("*").eq("workspace_id", profile.workspace_id).order("created_at", { ascending: false })
+      supabase.from("tasks").select("*").eq("workspace_id", profile.workspace_id).order("created_at", { ascending: false }),
+      supabase.from("profiles").select("id,name,role,title,created_at").eq("workspace_id", profile.workspace_id).order("created_at", { ascending: true }),
+      isAdmin
+        ? supabase.from("invites").select("email,role,token,accepted_at,created_at").eq("workspace_id", profile.workspace_id).order("created_at", { ascending: false })
+        : Promise.resolve({ data: [], error: null })
     ]);
-    const errors = [wsError, tasksError].filter(Boolean);
+    const { data: inviteRows, error: invitesError } = inviteResult;
+    const errors = [wsError, tasksError, membersError, invitesError].filter(Boolean);
     if (ws?.config) setConfig(mergeConfig(DEFAULT_CONFIG, ws.config));
     if (errors.length) setErr(errors.map((error) => error.message).join(" "));
     else {
       setErr("");
       setTasks(rows || []);
+      setMembers(memberRows || []);
+      setInvites(inviteRows || []);
     }
-  }, [profile.workspace_id]);
+  }, [isAdmin, profile.workspace_id]);
 
   useEffect(() => {
     refresh();
@@ -145,7 +187,7 @@ function Board({ profile }) {
     return () => { supabase.removeChannel(channel); };
   }, [profile.workspace_id, refresh]);
 
-  async function mutate(id, patch, _event, guard = (query) => query) {
+  async function mutate(id, patch, guard = (query) => query) {
     setErr("");
     const query = guard(
       supabase.from("tasks").update(patch).eq("id", id).eq("workspace_id", profile.workspace_id)
@@ -175,6 +217,32 @@ function Board({ profile }) {
     refresh();
   }
 
+  async function createInvite(e) {
+    e.preventDefault();
+    setErr("");
+    setInviteLink("");
+    const email = inviteEmail.trim();
+    if (!email) return setErr("Enter an invite email.");
+    const { data, error } = await supabase.from("invites")
+      .insert({ workspace_id: profile.workspace_id, email, role: inviteRole, created_by: profile.id })
+      .select("token")
+      .single();
+    if (error) return setErr(error.message);
+    setInviteEmail("");
+    setInviteLink(data.token);
+    refresh();
+  }
+
+  async function changeRole(memberId, role) {
+    setErr("");
+    const { error } = await supabase.rpc("admin_set_role", {
+      target_profile_id: memberId,
+      new_role: role
+    });
+    if (error) return setErr(error.message);
+    refresh();
+  }
+
   const rec = recommendTrack({ flags }, config);
   const t = config.terms;
 
@@ -201,70 +269,124 @@ function Board({ profile }) {
 
       {err && <p className="error">Guardrail / error: {err}</p>}
 
+      {isAdmin && (
+        <section className="card admin-panel">
+          <div>
+            <h2>Team access</h2>
+            <p className="muted">Invite teammates and adjust workspace roles. Invited users accept with the same email address.</p>
+          </div>
+          <form onSubmit={createInvite} className="row">
+            <input type="email" placeholder="teammate@company.com" value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)} />
+            <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+              {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+            </select>
+            <button className="btn">Create invite</button>
+          </form>
+          {inviteLink && <p className="invite-link">Invite link: <code>{inviteLink}</code></p>}
+          <div className="team-list">
+            {members.map((member) => (
+              <div key={member.id} className="team-row">
+                <span>{member.name || "Unnamed"} <small>{member.id === profile.id ? "you" : ""}</small></span>
+                <select value={member.role} disabled={member.id === profile.id}
+                  onChange={(e) => changeRole(member.id, e.target.value)}>
+                  {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+          {invites.length > 0 && (
+            <div className="pending-invites">
+              {invites.map((invite) => (
+                <small key={invite.token}>
+                  {invite.email} · {invite.role} · {invite.accepted_at ? "accepted" : "pending"}
+                </small>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <div className="board">
         {STAGES.map((stage) => (
           <div key={stage} className="col-stage">
             <h3>{STAGE_LABELS[stage]} <span>{tasks.filter((x) => x.stage === stage).length}</span></h3>
             {tasks.filter((x) => x.stage === stage).map((task) => {
               const isOwner = task.owner_id === profile.id;
-              const canReview = validReviewer({ ...task, reviewer_id: profile.id });
+              const canReview = task.reviewer_id
+                ? task.reviewer_id === profile.id
+                : validReviewer({ ...task, reviewer_id: profile.id });
               const quickDone = checklistComplete(task, config, "quick");
+              const fullDone = checklistComplete(task, config, "full");
+              const fullItems = reviewChecklistItems(config, "full");
               return (
                 <div key={task.id} className="tcard">
                   <b>{task.title}</b>
                   <small>{task.track === "full" ? t.fullReview : t.quickCheck}{task.owner_id ? "" : " · no owner"}</small>
                   <div className="acts">
                     {stage === "intake" && (
-                      <button onClick={() => mutate(task.id, { stage: "routing" }, "Routed", (query) => query.eq("stage", "intake"))}>Route →</button>
+                      <button disabled={!canManage} onClick={() => mutate(task.id, { stage: "routing" }, (query) => query.eq("stage", "intake"))}>Route →</button>
                     )}
                     {stage === "routing" && !task.owner_id && (
-                      <button onClick={() => mutate(task.id, { owner_id: profile.id }, `${t.owner}: ${profile.name}`,
+                      <button disabled={!canManage} onClick={() => mutate(task.id, { owner_id: profile.id },
                         (query) => query.eq("stage", "routing").is("owner_id", null))}>Own it</button>
                     )}
                     {stage === "routing" && isOwner && canStartWork({ ownerId: task.owner_id }) && (
-                      <button onClick={() => mutate(task.id, { stage: "owned" }, "Accepted — work started",
+                      <button disabled={!canManage} onClick={() => mutate(task.id, { stage: "owned" },
                         (query) => query.eq("stage", "routing").eq("owner_id", profile.id))}>Accept →</button>
                     )}
                     {stage === "owned" && task.track === "quick" && (
                       <div className="checklist">
-                        {config.checklists.quick.map((item) => (
+                        {reviewChecklistItems(config, "quick").map((item) => (
                           <label key={item.id}>
                             <input
                               type="checkbox"
                               checked={!!task.checklist?.[item.id]}
-                              disabled={!isOwner}
+                              disabled={!canManage || !isOwner}
                               onChange={(e) => mutate(task.id,
                                 { checklist: { ...task.checklist, [item.id]: e.target.checked } },
-                                `Checklist ${e.target.checked ? "checked" : "unchecked"}: ${item.label}`,
                                 (query) => query.eq("stage", "owned").eq("owner_id", profile.id)
                               )}
                             /> {item.label}
                           </label>
                         ))}
                         <button
-                          disabled={!isOwner || !quickDone}
-                          onClick={() => mutate(task.id, { stage: "ready" }, "Checklist complete — ready",
+                          disabled={!canManage || !isOwner || !quickDone}
+                          onClick={() => mutate(task.id, { stage: "ready" },
                             (query) => query.eq("stage", "owned").eq("owner_id", profile.id))}>
                           Mark ready →
                         </button>
                       </div>
                     )}
                     {stage === "owned" && task.track === "full" && (
-                      <button disabled={!isOwner} onClick={() => mutate(task.id,
-                        { stage: "in_review" }, "Review requested",
+                      <button disabled={!canManage || !isOwner} onClick={() => mutate(task.id,
+                        { stage: "in_review" },
                         (query) => query.eq("stage", "owned").eq("owner_id", profile.id))}>Request review →</button>
                     )}
-                    {stage === "in_review" && (
-                      <button disabled={!canReview} onClick={() => mutate(task.id,
-                        { reviewer_id: profile.id, signoff: { reviewer_id: profile.id, ts: new Date().toISOString() }, stage: "ready" },
-                        "Sign-off recorded",
-                        (query) => query.eq("stage", "in_review").neq("owner_id", profile.id).is("reviewer_id", null))}>Record sign-off</button>
+                    {stage === "in_review" && task.track === "full" && (
+                      <div className="checklist">
+                        {fullItems.map((item) => (
+                          <label key={item.id}>
+                            <input
+                              type="checkbox"
+                              checked={!!task.checklist?.[item.id]}
+                              disabled={!canReviewRole || !canReview}
+                              onChange={(e) => mutate(task.id,
+                                { checklist: { ...task.checklist, [item.id]: e.target.checked } },
+                                (query) => query.eq("stage", "in_review").neq("owner_id", profile.id)
+                              )}
+                            /> {item.label}
+                          </label>
+                        ))}
+                        <button disabled={!canReviewRole || !canReview || !fullDone} onClick={() => mutate(task.id,
+                          { reviewer_id: profile.id, signoff: { reviewer_id: profile.id, ts: new Date().toISOString() }, stage: "ready" },
+                          (query) => query.eq("stage", "in_review").neq("owner_id", profile.id).is("reviewer_id", null))}>Record sign-off</button>
+                      </div>
                     )}
                     {stage === "ready" && (
                       <button
-                        disabled={!canShip({ ...task, ownerId: task.owner_id }, config)}
+                        disabled={!canManage || !canShip({ ...task, ownerId: task.owner_id }, config)}
                         onClick={() => mutate(task.id, { stage: "shipped" },
-                          `Shipped via ${task.track === "full" ? t.fullReview : t.quickCheck}`,
                           (query) => query.eq("stage", "ready"))}>
                         Ship
                       </button>
@@ -285,6 +407,7 @@ function Board({ profile }) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(undefined); // undefined = loading
+  const inviteToken = new URLSearchParams(window.location.search).get("invite");
 
   useEffect(() => {
     if (!supabase) return;
@@ -303,6 +426,6 @@ export default function App() {
   if (!supabase) return <SetupScreen />;
   if (!session) return <SignIn />;
   if (profile === undefined) return <div className="wrap"><p className="muted">Loading…</p></div>;
-  if (profile === null) return <Onboarding user={session.user} onDone={loadProfile} />;
+  if (profile === null) return <Onboarding initialInviteToken={inviteToken || ""} onDone={loadProfile} />;
   return <Board profile={profile} />;
 }
