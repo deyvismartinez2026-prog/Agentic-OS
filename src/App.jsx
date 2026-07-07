@@ -229,7 +229,7 @@ function Board({ profile }) {
       .single();
     if (error) return setErr(error.message);
     setInviteEmail("");
-    setInviteLink(data.token);
+    setInviteLink(`${window.location.origin}?invite=${data.token}`);
     refresh();
   }
 
@@ -283,13 +283,12 @@ function Board({ profile }) {
             </select>
             <button className="btn">Create invite</button>
           </form>
-          {inviteLink && <p className="invite-link">Invite link: <code>{inviteLink}</code></p>}
+          {inviteLink && <p className="invite-link">Invite token: <code>{inviteLink}</code></p>}
           <div className="team-list">
             {members.map((member) => (
               <div key={member.id} className="team-row">
                 <span>{member.name || "Unnamed"} <small>{member.id === profile.id ? "you" : ""}</small></span>
-                <select value={member.role} disabled={member.id === profile.id}
-                  onChange={(e) => changeRole(member.id, e.target.value)}>
+                <select value={member.role} onChange={(e) => changeRole(member.id, e.target.value)}>
                   {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
                 </select>
               </div>
@@ -312,10 +311,11 @@ function Board({ profile }) {
           <div key={stage} className="col-stage">
             <h3>{STAGE_LABELS[stage]} <span>{tasks.filter((x) => x.stage === stage).length}</span></h3>
             {tasks.filter((x) => x.stage === stage).map((task) => {
-              const isOwner = task.owner_id === profile.id;
-              const canReview = task.reviewer_id
-                ? task.reviewer_id === profile.id
-                : validReviewer({ ...task, reviewer_id: profile.id });
+              const isTaskOwner = task.owner_id === profile.id;
+              const isValidReviewer = validReviewer({ ...task, reviewer_id: profile.id });
+              const canRecordReview = canReviewRole && (
+                task.reviewer_id ? task.reviewer_id === profile.id : isValidReviewer
+              );
               const quickDone = checklistComplete(task, config, "quick");
               const fullDone = checklistComplete(task, config, "full");
               const fullItems = reviewChecklistItems(config, "full");
@@ -331,7 +331,7 @@ function Board({ profile }) {
                       <button disabled={!canManage} onClick={() => mutate(task.id, { owner_id: profile.id },
                         (query) => query.eq("stage", "routing").is("owner_id", null))}>Own it</button>
                     )}
-                    {stage === "routing" && isOwner && canStartWork({ ownerId: task.owner_id }) && (
+                    {stage === "routing" && isTaskOwner && canStartWork({ ownerId: task.owner_id }) && (
                       <button disabled={!canManage} onClick={() => mutate(task.id, { stage: "owned" },
                         (query) => query.eq("stage", "routing").eq("owner_id", profile.id))}>Accept →</button>
                     )}
@@ -342,7 +342,7 @@ function Board({ profile }) {
                             <input
                               type="checkbox"
                               checked={!!task.checklist?.[item.id]}
-                              disabled={!canManage || !isOwner}
+                              disabled={!canManage || !isTaskOwner}
                               onChange={(e) => mutate(task.id,
                                 { checklist: { ...task.checklist, [item.id]: e.target.checked } },
                                 (query) => query.eq("stage", "owned").eq("owner_id", profile.id)
@@ -351,7 +351,7 @@ function Board({ profile }) {
                           </label>
                         ))}
                         <button
-                          disabled={!canManage || !isOwner || !quickDone}
+                          disabled={!canManage || !isTaskOwner || !quickDone}
                           onClick={() => mutate(task.id, { stage: "ready" },
                             (query) => query.eq("stage", "owned").eq("owner_id", profile.id))}>
                           Mark ready →
@@ -359,7 +359,7 @@ function Board({ profile }) {
                       </div>
                     )}
                     {stage === "owned" && task.track === "full" && (
-                      <button disabled={!canManage || !isOwner} onClick={() => mutate(task.id,
+                      <button disabled={!canManage || !isTaskOwner} onClick={() => mutate(task.id,
                         { stage: "in_review" },
                         (query) => query.eq("stage", "owned").eq("owner_id", profile.id))}>Request review →</button>
                     )}
@@ -370,7 +370,7 @@ function Board({ profile }) {
                             <input
                               type="checkbox"
                               checked={!!task.checklist?.[item.id]}
-                              disabled={!canReviewRole || !canReview}
+                              disabled={!canRecordReview}
                               onChange={(e) => mutate(task.id,
                                 { checklist: { ...task.checklist, [item.id]: e.target.checked } },
                                 (query) => query.eq("stage", "in_review").neq("owner_id", profile.id)
@@ -378,7 +378,7 @@ function Board({ profile }) {
                             /> {item.label}
                           </label>
                         ))}
-                        <button disabled={!canReviewRole || !canReview || !fullDone} onClick={() => mutate(task.id,
+                        <button disabled={!canRecordReview || !fullDone} onClick={() => mutate(task.id,
                           { reviewer_id: profile.id, signoff: { reviewer_id: profile.id, ts: new Date().toISOString() }, stage: "ready" },
                           (query) => query.eq("stage", "in_review").neq("owner_id", profile.id).is("reviewer_id", null))}>Record sign-off</button>
                       </div>

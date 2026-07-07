@@ -35,15 +35,27 @@ create table if not exists invites (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces (id) on delete cascade,
   email text not null,
-  role text not null default 'owner'
+  role text not null default 'reviewer'
     check (role in ('admin', 'owner', 'reviewer', 'requester')),
   token uuid not null default gen_random_uuid() unique,
   created_by uuid references profiles (id),
   accepted_at timestamptz,
   created_at timestamptz not null default now()
 );
-alter table invites add column if not exists role text not null default 'owner';
-alter table invites alter column role set default 'owner';
+alter table invites add column if not exists role text not null default 'reviewer';
+alter table invites alter column role set default 'reviewer';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'invites_role_check'
+      and conrelid = 'public.invites'::regclass
+  ) then
+    alter table invites
+      add constraint invites_role_check
+      check (role in ('admin', 'owner', 'reviewer', 'requester'));
+  end if;
+end $$;
 create unique index if not exists invites_pending_email
   on invites (workspace_id, lower(email))
   where accepted_at is null;
@@ -399,7 +411,10 @@ create policy "tasks update by workspace staff" on tasks for update
     workspace_id = (select my_workspace_id())
     and (select my_role()) in ('admin', 'owner', 'reviewer')
   )
-  with check (workspace_id = (select my_workspace_id()));
+  with check (
+    workspace_id = (select my_workspace_id())
+    and (select my_role()) in ('admin', 'owner', 'reviewer')
+  );
 create policy "runs by workspace" on agent_runs for all
   using (workspace_id = (select my_workspace_id()))
   with check (workspace_id = (select my_workspace_id()));
