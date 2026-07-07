@@ -21,6 +21,8 @@ export function canShip(task, config) {
   if (task.stage !== "ready") return false;
   if (config.governance?.requireOwnerToProceed !== false && !task.owner_id && !task.ownerId) return false;
   if (task.track === "full") {
+    const fullItems = config.checklists?.full || [];
+    if (!fullItems.every((i) => task.checklist && task.checklist[i.id])) return false;
     if (config.governance?.requireReviewerSignoffForFull === false) return true;
     return !!task.signoff && validReviewer(task);
   }

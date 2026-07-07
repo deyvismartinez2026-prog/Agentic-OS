@@ -23,12 +23,12 @@ function mergeConfig(base, override) {
 }
 
 function checklistComplete(task, config, listName) {
-  const items = reviewChecklistItems(config, listName);
+  const items = checklistItems(config, listName);
   return items.every((item) => task.checklist?.[item.id]);
 }
 
-function reviewChecklistItems(config, listName) {
-  return (config.checklists?.[listName] || []).filter((item) => !item.requiresReviewer);
+function checklistItems(config, listName) {
+  return config.checklists?.[listName] || [];
 }
 
 const ROLE_OPTIONS = ["admin", "owner", "reviewer", "requester"];
@@ -318,7 +318,7 @@ function Board({ profile }) {
               );
               const quickDone = checklistComplete(task, config, "quick");
               const fullDone = checklistComplete(task, config, "full");
-              const fullItems = reviewChecklistItems(config, "full");
+              const fullItems = checklistItems(config, "full");
               return (
                 <div key={task.id} className="tcard">
                   <b>{task.title}</b>
@@ -337,7 +337,7 @@ function Board({ profile }) {
                     )}
                     {stage === "owned" && task.track === "quick" && (
                       <div className="checklist">
-                        {reviewChecklistItems(config, "quick").map((item) => (
+                        {checklistItems(config, "quick").map((item) => (
                           <label key={item.id}>
                             <input
                               type="checkbox"

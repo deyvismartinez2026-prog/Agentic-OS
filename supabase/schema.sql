@@ -514,6 +514,14 @@ begin
       raise exception 'Guardrail: reviewer can only be assigned during Full Review sign-off';
     end if;
   end if;
+  if tg_op = 'UPDATE'
+    and old.track = 'full'
+    and old.stage = 'in_review'
+    and old.checklist is distinct from new.checklist
+    and actor_id is not null
+    and actor_id = old.owner_id then
+    raise exception 'Guardrail: Full Review checklist must be completed by a non-owner reviewer';
+  end if;
 
   if new.stage in ('owned', 'in_review', 'ready', 'shipped') and new.owner_id is null then
     raise exception 'Guardrail: a task cannot proceed without one named owner';
@@ -538,7 +546,6 @@ begin
       from workspaces w
       cross join jsonb_array_elements(coalesce(w.config #> '{checklists,full}', '[]'::jsonb)) as item(value)
       where w.id = new.workspace_id
-        and coalesce((item.value->>'requiresReviewer')::boolean, false) is false
     loop
       if coalesce(new.checklist->>full_item.id, 'false') <> 'true' then
         raise exception 'Guardrail: Full Review item % is incomplete', full_item.id;
