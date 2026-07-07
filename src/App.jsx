@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { DEFAULT_CONFIG } from "./core/config";
-import { recommendTrack, canShip, canStartWork, validReviewer, STAGES, STAGE_LABELS } from "./core/routing";
+import {
+  recommendTrack,
+  canShip,
+  canStartWork,
+  downgradeNeedsReason,
+  validReviewer,
+  STAGES,
+  STAGE_LABELS
+} from "./core/routing";
 
 /* ============================================================
    AAS Agentic OS — React + Supabase pilot scaffold.
@@ -148,6 +156,7 @@ function Board({ profile }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("reviewer");
   const [inviteLink, setInviteLink] = useState("");
+  const [reroutes, setReroutes] = useState({});
   const [err, setErr] = useState("");
   const isAdmin = profile.role === "admin";
   const canManage = canManageTasks(profile.role);
@@ -199,7 +208,6 @@ function Board({ profile }) {
       await refresh();
       return false;
     }
-    refresh();
     return true;
   }
 
@@ -237,7 +245,7 @@ function Board({ profile }) {
       .single();
     if (error) return setErr(error.message);
     setInviteEmail("");
-    setInviteLink(`${window.location.origin}?invite=${data.token}`);
+    setInviteLink(data.token);
     refresh();
   }
 
@@ -249,6 +257,35 @@ function Board({ profile }) {
     });
     if (error) return setErr(error.message);
     refresh();
+  }
+
+  function updateRerouteDraft(taskId, patch) {
+    setReroutes((current) => ({
+      ...current,
+      [taskId]: { ...current[taskId], ...patch }
+    }));
+  }
+
+  async function rerouteTask(task) {
+    setErr("");
+    const draft = reroutes[task.id] || {};
+    const newTrack = draft.track || task.track;
+    const reason = (draft.reason || "").trim();
+    if (newTrack === task.track) return setErr("Choose a different track before rerouting.");
+    if (task.track === "full" && newTrack === "quick" && !reason) {
+      return setErr("Downgrading from Full Review to Quick Check requires a reason.");
+    }
+    const { error } = await supabase.rpc("reroute_task", {
+      task: task.id,
+      new_track: newTrack,
+      reason
+    });
+    if (error) return setErr(error.message);
+    setReroutes((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
   }
 
   const rec = recommendTrack({ flags }, config);
@@ -327,10 +364,32 @@ function Board({ profile }) {
               const quickDone = checklistComplete(task, config, "quick");
               const fullDone = checklistComplete(task, config, "full");
               const fullItems = checklistItems(config, "full");
+              const canRerouteTask = (isAdmin || (profile.role === "owner" && isTaskOwner)) && stage !== "shipped";
+              const rerouteDraft = reroutes[task.id] || {};
+              const rerouteTrack = rerouteDraft.track || task.track;
+              const rerouteReason = rerouteDraft.reason || "";
+              const rerouteNeedsReason = (task.track === "full" && rerouteTrack === "quick")
+                || downgradeNeedsReason(task, rerouteTrack, config);
               return (
                 <div key={task.id} className="tcard">
                   <b>{task.title}</b>
                   <small>{task.track === "full" ? t.fullReview : t.quickCheck}{task.owner_id ? "" : " · no owner"}</small>
+                  {canRerouteTask && (
+                    <form className="reroute" onSubmit={(e) => { e.preventDefault(); rerouteTask(task); }}>
+                      <select value={rerouteTrack} onChange={(e) => updateRerouteDraft(task.id, { track: e.target.value })}>
+                        <option value="quick">{t.quickCheck}</option>
+                        <option value="full">{t.fullReview}</option>
+                      </select>
+                      {rerouteNeedsReason && (
+                        <input
+                          placeholder="Downgrade reason"
+                          value={rerouteReason}
+                          onChange={(e) => updateRerouteDraft(task.id, { reason: e.target.value })}
+                        />
+                      )}
+                      <button disabled={rerouteTrack === task.track || (rerouteNeedsReason && !rerouteReason.trim())}>Reroute</button>
+                    </form>
+                  )}
                   <div className="acts">
                     {stage === "intake" && (
                       <button disabled={!canManage} onClick={() => mutate(task.id, { stage: "routing" }, (query) => query.eq("stage", "intake"))}>Route →</button>

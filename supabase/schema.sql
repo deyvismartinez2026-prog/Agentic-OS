@@ -340,54 +340,57 @@ begin
   );
 end $$;
 
-create or replace function reroute_task(task_id uuid, new_flags jsonb, new_track text, reason text)
+drop function if exists reroute_task(uuid, jsonb, text, text);
+drop function if exists reroute_task(uuid, text, text);
+create or replace function reroute_task(task uuid, new_track text, reason text)
 returns void language plpgsql security definer set search_path = public as $$
 declare
   task_row tasks%rowtype;
+  actor_id uuid;
+  actor_role text;
   clean_track text;
+  clean_reason text;
 begin
-  if (select auth.uid()) is null then
+  actor_id := (select auth.uid());
+  actor_role := (select my_role());
+
+  if actor_id is null then
     raise exception 'Authentication is required';
-  end if;
-  if (select my_role()) not in ('admin', 'owner') then
-    raise exception 'Only owners or admins can reroute tasks';
   end if;
 
   clean_track := lower(trim(new_track));
+  clean_reason := nullif(trim(reason), '');
   if clean_track not in ('quick', 'full') then
     raise exception 'Invalid track';
   end if;
 
   select * into task_row
   from tasks
-  where id = task_id
+  where id = $1
     and workspace_id = (select my_workspace_id())
   for update;
 
   if not found then
     raise exception 'Task not found';
   end if;
+  if actor_role <> 'admin' and (actor_role <> 'owner' or task_row.owner_id is distinct from actor_id) then
+    raise exception 'Only admins or the task owner can reroute tasks';
+  end if;
   if task_row.stage = 'shipped' then
     raise exception 'Shipped tasks cannot be rerouted';
   end if;
-  if task_row.track = 'full' and clean_track = 'quick' and nullif(trim(reason), '') is null then
+  if task_row.track = clean_track then
+    return;
+  end if;
+  if task_row.track = 'full' and clean_track = 'quick' and clean_reason is null then
     raise exception 'Downgrading from Full Review requires a reason';
   end if;
 
   perform set_config('app.allow_task_reroute', 'on', true);
+  perform set_config('app.reroute_reason', coalesce(clean_reason, ''), true);
   update tasks
-  set flags = coalesce(new_flags, '{}'::jsonb),
-      track = clean_track
-  where id = task_id;
-
-  insert into audit_events (workspace_id, task_id, actor, event, payload)
-  values (
-    task_row.workspace_id,
-    task_row.id,
-    coalesce((select nullif(name, '') from profiles where id = (select auth.uid())), (select auth.uid())::text),
-    'Task rerouted',
-    jsonb_build_object('from_track', task_row.track, 'to_track', clean_track, 'reason', nullif(trim(reason), ''))
-  );
+  set track = clean_track
+  where id = task_row.id;
 end $$;
 
 drop policy if exists "profiles read own workspace" on profiles;
@@ -695,6 +698,7 @@ begin
     event_payload := jsonb_build_object(
       'from_track', old.track,
       'to_track', new.track,
+      'reason', nullif(current_setting('app.reroute_reason', true), ''),
       'owner_id', new.owner_id,
       'reviewer_id', new.reviewer_id
     );

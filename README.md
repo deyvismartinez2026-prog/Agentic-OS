@@ -10,9 +10,10 @@ has validated the workflow and needs more than one person in the same workspace.
 | --- | --- | --- |
 | White-label config schema | `src/core/config.js` + `workspaces.config` (jsonb) | Same shape as `assets/config.js` — brand, terms, workstreams, routing rules, checklists, governance. One config per client workspace. |
 | Routing engine | `src/core/routing.js` → `recommendTrack()` | Identical logic + confidence. |
-| Guardrails | `src/core/routing.js` + **database triggers** | Valid stage movement, one-named-owner, quick checklist completion, and non-owner reviewer sign-off are enforced in the app *and* in Postgres (`supabase/schema.sql`), so no client can bypass them. |
+| Guardrails | `src/core/routing.js` + **database triggers** | Valid stage movement, role permissions, one-named-owner, checklist completion, and non-owner reviewer sign-off are enforced in the app *and* in Postgres (`supabase/schema.sql`), so no client can bypass them. |
 | Stage model | `intake → routing → owned → in_review → ready → shipped` | Same as the static app. |
-| Audit trail | `audit_events` table (append-only) | Task mutations are logged by database triggers with the authenticated actor. |
+| Team access | `invites` + RPCs | Admins create invite tokens, invited users join by matching email, and admins can change teammate roles. |
+| Audit trail | `audit_events` table (append-only) | Task mutations are logged by database triggers with the authenticated actor and structured payload. |
 
 ## Setup (10 minutes)
 
@@ -28,8 +29,9 @@ has validated the workflow and needs more than one person in the same workspace.
    npm run dev
    ```
 5. Sign in with a magic link, create your workspace, and you're on the board.
-   Team invites should go through a dedicated invite/admin RPC; direct self-service edits to
-   `profiles.workspace_id` and `profiles.role` are blocked by RLS and triggers.
+   Admins can create teammate invite tokens from the board. Invited users must sign in
+   with the invited email and paste the invite token on the join screen; `?invite=<token>`
+   also pre-fills that field.
 
 ## What's here vs. what ports next
 
@@ -43,8 +45,18 @@ Recommended next increments:
 1. Port the Command Center dashboard panels (stat cards, kanban, ownership console).
 2. Agent runs: move the proxy (`../proxy/server.js`) to a Supabase Edge Function and
    write `agent_runs` rows from it.
-3. Invite/roles UI on top of `profiles`.
-4. Per-workspace theming from `workspaces.config.brand` (same CSS-variable trick).
+3. Per-workspace theming from `workspaces.config.brand` (same CSS-variable trick).
+
+## Roles
+
+- `requester`: submit new requests only.
+- `reviewer`: complete Full Review checklist items and record non-owner sign-off.
+- `owner`: route, claim, move, checklist, reroute, and ship workspace tasks.
+- `admin`: owner permissions plus invite creation and role management.
+
+Direct self-service edits to `profiles.workspace_id` and `profiles.role` are blocked by RLS
+and triggers. Role changes go through `admin_set_role(...)`; invite acceptance goes through
+`accept_invite(...)`. Admins can create invite rows from the UI or use `create_invite(...)`.
 
 ## Security notes
 
@@ -52,3 +64,15 @@ Recommended next increments:
 - Guardrails are enforced twice: in the UI (nice errors) and in Postgres triggers
   (hard backstop). Try skipping a stage, shipping an incomplete Quick Check, or signing
   off your own Full Review task — the database itself refuses.
+- Track changes are intentionally frozen for normal row updates. Admins or the named task
+  owner can use `reroute_task(task, new_track, reason)`, which requires a reason when
+  downgrading Full Review to Quick Check.
+
+## Tests
+
+```
+npm test
+```
+
+Pure routing guardrails are covered by Vitest. SQL trigger coverage is documented in
+`supabase/TEST-MATRIX.md` for live Supabase verification.

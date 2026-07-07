@@ -42,6 +42,9 @@ button:disabled { opacity: .45; cursor: default; }
 .col-stage h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--body); display: flex; justify-content: space-between; margin: 0 0 8px; }
 .tcard { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 9px; margin-bottom: 8px; font-size: 13px; }
 .tcard small { display: block; color: var(--faint); font-family: var(--mono); font-size: 10px; margin: 3px 0 6px; }
+.reroute { display: grid; grid-template-columns: minmax(96px, auto) 1fr auto; gap: 5px; margin: 6px 0; }
+.reroute input, .reroute select { font-size: 11px; padding: 4px 7px; min-width: 0; }
+.reroute button { font-size: 11px; padding: 4px 8px; border-radius: 6px; }
 .acts { display: flex; flex-wrap: wrap; gap: 5px; }
 .acts button { font-size: 11px; padding: 4px 8px; border-radius: 6px; }
 .checklist { display: flex; flex-direction: column; gap: 6px; width: 100%; color: var(--body); }
@@ -52,5 +55,6 @@ button:disabled { opacity: .45; cursor: default; }
   .row { flex-direction: column; align-items: stretch; }
   select { width: 100%; }
   .team-row { align-items: stretch; flex-direction: column; }
+  .reroute { grid-template-columns: 1fr; }
   .board { grid-template-columns: 1fr; }
 }
